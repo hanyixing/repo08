@@ -137,7 +137,7 @@ tasks.named('test', Test) {
 tasks.named('jacocoTestReport', JacocoReport) {
     reports {
         xml.required = true
-        html.required = false
+        html.required = true
     }
 }
 

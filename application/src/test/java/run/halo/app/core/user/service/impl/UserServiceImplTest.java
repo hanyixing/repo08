@@ -34,6 +34,9 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Sort;
+import org.springframework.security.authentication.TestingAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.ReactiveSecurityContextHolder;
 import org.springframework.security.core.session.ReactiveSessionInformation;
 import org.springframework.security.core.session.ReactiveSessionRegistry;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -66,6 +69,8 @@ import run.halo.app.infra.exception.EmailAlreadyTakenException;
 import run.halo.app.infra.exception.UnsatisfiedAttributeValueException;
 import run.halo.app.infra.exception.UserNotFoundException;
 import run.halo.app.plugin.extensionpoint.ExtensionGetter;
+import run.halo.app.security.authorization.AuthorityUtils;
+import run.halo.app.security.device.DeviceService;
 
 @ExtendWith(MockitoExtension.class)
 class UserServiceImplTest {
@@ -96,6 +101,9 @@ class UserServiceImplTest {
 
     @Mock
     ReactiveSessionRegistry sessionRegistry;
+
+    @Mock
+    DeviceService deviceService;
 
     @InjectMocks
     UserServiceImpl userService;
@@ -597,6 +605,205 @@ class UserServiceImplTest {
         user.getSpec().setPassword("");
         userService
                 .confirmPassword("fake-user", "fake-password")
+                .as(StepVerifier::create)
+                .expectNext(true)
+                .verifyComplete();
+    }
+
+    @Test
+    void confirmPasswordWhenPasswordMatches() {
+        var user = createUser("fake-user", "encoded-password");
+        when(client.get(User.class, "fake-user")).thenReturn(Mono.just(user));
+        when(passwordEncoder.matches("raw-password", "encoded-password")).thenReturn(true);
+
+        userService
+                .confirmPassword("fake-user", "raw-password")
+                .as(StepVerifier::create)
+                .expectNext(true)
+                .verifyComplete();
+    }
+
+    @Test
+    void confirmPasswordWhenPasswordNotMatches() {
+        var user = createUser("fake-user", "encoded-password");
+        when(client.get(User.class, "fake-user")).thenReturn(Mono.just(user));
+        when(passwordEncoder.matches("wrong-password", "encoded-password")).thenReturn(false);
+
+        userService
+                .confirmPassword("fake-user", "wrong-password")
+                .as(StepVerifier::create)
+                .expectNext(false)
+                .verifyComplete();
+    }
+
+    @Nested
+    @DisplayName("HasSufficientRoles")
+    class HasSufficientRolesTest {
+
+        @Test
+        void shouldReturnTrueWhenUserHasSufficientRoles() {
+            var auth = new TestingAuthenticationToken(
+                    "fake-user", "credentials",
+                    new SimpleGrantedAuthority("ROLE_super-role"),
+                    new SimpleGrantedAuthority("ROLE_role-template-manage-comments"));
+
+            when(roleService.contains(anySet(), anySet())).thenReturn(Mono.just(true));
+
+            userService.hasSufficientRoles(Set.of("super-role"))
+                    .contextWrite(ReactiveSecurityContextHolder.withAuthentication(auth))
+                    .as(StepVerifier::create)
+                    .expectNext(true)
+                    .verifyComplete();
+        }
+
+        @Test
+        void shouldReturnFalseWhenUserLacksRoles() {
+            var auth = new TestingAuthenticationToken(
+                    "fake-user", "credentials",
+                    new SimpleGrantedAuthority("ROLE_authenticated"));
+
+            when(roleService.contains(anySet(), anySet())).thenReturn(Mono.just(false));
+
+            userService.hasSufficientRoles(Set.of("super-role"))
+                    .contextWrite(ReactiveSecurityContextHolder.withAuthentication(auth))
+                    .as(StepVerifier::create)
+                    .expectNext(false)
+                    .verifyComplete();
+        }
+
+        @Test
+        void shouldReturnFalseWhenNoSecurityContext() {
+            userService.hasSufficientRoles(Set.of("super-role"))
+                    .as(StepVerifier::create)
+                    .expectNext(false)
+                    .verifyComplete();
+        }
+    }
+
+    @Nested
+    @DisplayName("DisableAndEnable")
+    class DisableAndEnableTest {
+
+        @Test
+        void shouldDisableUser() {
+            var user = createUser("fake-user", "fake-password");
+            user.getSpec().setDisabled(false);
+
+            var tx = mock(ReactiveTransaction.class);
+            when(txManager.getReactiveTransaction(any())).thenReturn(Mono.just(tx));
+            when(txManager.commit(tx)).thenReturn(Mono.empty());
+
+            when(client.fetch(User.class, "fake-user")).thenReturn(Mono.just(user));
+            when(deviceService.revoke("fake-user")).thenReturn(Mono.empty());
+            when(client.update(any(User.class))).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+
+            userService.disable("fake-user")
+                    .as(StepVerifier::create)
+                    .consumeNextWith(disabledUser -> {
+                        assertThat(disabledUser.getSpec().getDisabled()).isTrue();
+                    })
+                    .verifyComplete();
+
+            verify(deviceService).revoke("fake-user");
+        }
+
+        @Test
+        void shouldNotDisableAlreadyDisabledUser() {
+            var user = createUser("fake-user", "fake-password");
+            user.getSpec().setDisabled(true);
+
+            when(client.fetch(User.class, "fake-user")).thenReturn(Mono.just(user));
+
+            userService.disable("fake-user")
+                    .as(StepVerifier::create)
+                    .verifyComplete();
+
+            verify(deviceService, never()).revoke(anyString());
+        }
+
+        @Test
+        void shouldEnableDisabledUser() {
+            var user = createUser("fake-user", "fake-password");
+            user.getSpec().setDisabled(true);
+
+            when(client.fetch(User.class, "fake-user")).thenReturn(Mono.just(user));
+            when(client.update(any(User.class))).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+
+            userService.enable("fake-user")
+                    .as(StepVerifier::create)
+                    .consumeNextWith(enabledUser -> {
+                        assertThat(enabledUser.getSpec().getDisabled()).isFalse();
+                    })
+                    .verifyComplete();
+        }
+
+        @Test
+        void shouldNotEnableAlreadyEnabledUser() {
+            var user = createUser("fake-user", "fake-password");
+            user.getSpec().setDisabled(false);
+
+            when(client.fetch(User.class, "fake-user")).thenReturn(Mono.just(user));
+
+            userService.enable("fake-user")
+                    .as(StepVerifier::create)
+                    .verifyComplete();
+
+            verify(client, never()).update(any());
+        }
+    }
+
+    @Test
+    void encryptPassword() {
+        when(passwordEncoder.encode("raw-password")).thenReturn("encoded-password");
+        String result = userService.encryptPassword("raw-password");
+        assertThat(result).isEqualTo("encoded-password");
+        verify(passwordEncoder).encode("raw-password");
+    }
+
+    @Test
+    void listByEmail() {
+        var user = createUser("fake-user", "fake-password");
+        user.getSpec().setEmail("test@example.com");
+
+        when(client.listAll(eq(User.class), any(ListOptions.class), any(Sort.class)))
+                .thenReturn(Flux.just(user));
+
+        userService.listByEmail("test@example.com")
+                .as(StepVerifier::create)
+                .expectNext(user)
+                .verifyComplete();
+    }
+
+    @Test
+    void listByEmailWithEmptyResult() {
+        when(client.listAll(eq(User.class), any(ListOptions.class), any(Sort.class)))
+                .thenReturn(Flux.empty());
+
+        userService.listByEmail("nonexistent@example.com")
+                .as(StepVerifier::create)
+                .verifyComplete();
+    }
+
+    @Test
+    void checkEmailAlreadyVerifiedWhenNoVerifiedUser() {
+        when(client.listAll(eq(User.class), any(ListOptions.class), any(Sort.class)))
+                .thenReturn(Flux.empty());
+
+        userService.checkEmailAlreadyVerified("test@example.com")
+                .as(StepVerifier::create)
+                .expectNext(false)
+                .verifyComplete();
+    }
+
+    @Test
+    void checkEmailAlreadyVerifiedWhenVerifiedUserExists() {
+        var user = createUser("fake-user", "fake-password");
+        user.getSpec().setEmailVerified(true);
+
+        when(client.listAll(eq(User.class), any(ListOptions.class), any(Sort.class)))
+                .thenReturn(Flux.just(user));
+
+        userService.checkEmailAlreadyVerified("test@example.com")
                 .as(StepVerifier::create)
                 .expectNext(true)
                 .verifyComplete();

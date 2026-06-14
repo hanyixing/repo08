@@ -1,5 +1,6 @@
 package run.halo.app.content.comment;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
@@ -191,6 +192,124 @@ class CommentServiceImplTest {
                     }
                 }
                 """, JsonUtils.objectToJson(comment), true);
+    }
+
+    @Test
+    void removeBySubject() {
+        Ref subjectRef = Ref.of(post());
+
+        // Return one page of comments to delete, then empty page to stop
+        var commentToDelete = comment("A");
+        var page1 = new ListResult<Comment>(1, 200, 1, List.of(commentToDelete));
+        var emptyPage = new ListResult<Comment>(1, 200, 0, List.of());
+
+        when(client.listBy(eq(Comment.class), any(ListOptions.class), any(PageRequest.class)))
+                .thenReturn(Mono.just(page1))
+                .thenReturn(Mono.just(emptyPage));
+        when(client.delete(eq(commentToDelete))).thenReturn(Mono.just(commentToDelete));
+
+        StepVerifier.create(commentService.removeBySubject(subjectRef))
+                .verifyComplete();
+
+        verify(client, times(1)).delete(eq(commentToDelete));
+    }
+
+    @Test
+    void removeBySubjectWithNullRef() {
+        StepVerifier.create(commentService.removeBySubject(null))
+                .expectError(IllegalArgumentException.class)
+                .verify();
+    }
+
+    @Test
+    @WithMockUser(username = "test-user")
+    void createWithEmptyContent() {
+        Comment comment = new Comment();
+        comment.setMetadata(new Metadata());
+        comment.getMetadata().setName("fake");
+        comment.setSpec(new Comment.CommentSpec());
+        // content is null
+
+        StepVerifier.create(commentService.create(comment))
+                .expectError(org.springframework.web.server.ServerWebInputException.class)
+                .verify();
+    }
+
+    @Test
+    @WithMockUser(username = "test-user")
+    void createWhenCommentDisabled() {
+        var commentSetting = new SystemSetting.Comment();
+        commentSetting.setEnable(false);
+        when(environmentFetcher.fetchComment()).thenReturn(Mono.just(commentSetting));
+
+        Comment comment = new Comment();
+        comment.setMetadata(new Metadata());
+        comment.getMetadata().setName("fake");
+        comment.setSpec(new Comment.CommentSpec());
+        comment.getSpec().setContent("<p>safe content</p>");
+        comment.getSpec().setRaw("safe content");
+        comment.getSpec().setSubjectRef(Ref.of(post()));
+
+        StepVerifier.create(commentService.create(comment))
+                .expectError(run.halo.app.infra.exception.AccessDeniedException.class)
+                .verify();
+    }
+
+    @Test
+    @WithMockUser(username = "test-user")
+    void createWhenSystemUserOnlyAndEmailOwner() {
+        var commentSetting = new SystemSetting.Comment();
+        commentSetting.setEnable(true);
+        commentSetting.setSystemUserOnly(true);
+        when(environmentFetcher.fetchComment()).thenReturn(Mono.just(commentSetting));
+
+        Comment comment = new Comment();
+        comment.setMetadata(new Metadata());
+        comment.getMetadata().setName("fake");
+        comment.setSpec(new Comment.CommentSpec());
+        comment.getSpec().setContent("<p>safe content</p>");
+        comment.getSpec().setRaw("safe content");
+        comment.getSpec().setSubjectRef(Ref.of(post()));
+
+        Comment.CommentOwner emailOwner = new Comment.CommentOwner();
+        emailOwner.setKind(Comment.CommentOwner.KIND_EMAIL);
+        emailOwner.setName("anonymous@example.com");
+        comment.getSpec().setOwner(emailOwner);
+
+        StepVerifier.create(commentService.create(comment))
+                .expectError(run.halo.app.infra.exception.AccessDeniedException.class)
+                .verify();
+    }
+
+    @Test
+    @WithMockUser(username = "B-owner")
+    void createWithCommentManagementRole() throws JSONException {
+        var commentSetting = getCommentSetting();
+        when(environmentFetcher.fetchComment()).thenReturn(Mono.just(commentSetting));
+        // User has comment management role - should auto-approve
+        when(roleService.contains(Set.of("USER"), Set.of(AuthorityUtils.COMMENT_MANAGEMENT_ROLE_NAME)))
+                .thenReturn(Mono.just(true));
+
+        CommentRequest commentRequest = new CommentRequest();
+        commentRequest.setRaw("fake-raw");
+        commentRequest.setContent("fake-content");
+        commentRequest.setAllowNotification(true);
+        commentRequest.setSubjectRef(Ref.of(post()));
+
+        when(client.fetch(eq(User.class), eq("B-owner"))).thenReturn(Mono.just(createUser("B-owner")));
+
+        Comment commentToCreate = commentRequest.toComment();
+        commentToCreate.getMetadata().setName("fake");
+
+        ArgumentCaptor<Comment> captor = ArgumentCaptor.forClass(Comment.class);
+        when(client.create(any())).thenReturn(Mono.empty());
+
+        StepVerifier.create(commentService.create(commentToCreate)).verifyComplete();
+
+        verify(client, times(1)).create(captor.capture());
+        Comment created = captor.getValue();
+        // With comment management role, the comment should be auto-approved
+        assertTrue(created.getSpec().getApproved());
     }
 
     private List<Comment> comments() {
