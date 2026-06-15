@@ -69,3 +69,10 @@ nbdist/
 application-local.yml
 application-local.yaml
 application-local.properties
+
+### Deploy / runtime secrets (commit .env.example, never .env)
+.env
+*.pid
+halo.pid
+application-prod-local.yml
+application-prod-local.yaml

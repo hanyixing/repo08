@@ -1,0 +1,51 @@
+# Test profile: isolated, fast, no external dependencies.
+# Activate with: SPRING_PROFILES_ACTIVE=test  (or --spring.profiles.active=test)
+server:
+  port: 8090
+  forward-headers-strategy: native
+spring:
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+  devtools:
+    restart:
+      enabled: false
+  datasource:
+    type: com.zaxxer.hikari.HikariDataSource
+    # In-memory H2 in MySQL-compatibility mode; reset on every run.
+    driver-class-name: org.h2.Driver
+    url: jdbc:h2:mem:halo-test;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;MODE=MySQL
+    username: sa
+    password:
+  h2:
+    console:
+      enabled: false
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    open-in-view: false
+    show-sql: false
+  flyway:
+    enabled: false
+  cache:
+    type: none
+management:
+  endpoints:
+    web:
+      base-path: /api/admin/actuator
+      exposure:
+        include: [ 'health' ]
+  health:
+    redis:
+      enabled: false
+logging:
+  level:
+    run.halo.app: WARN
+    org.hibernate: WARN
+springfox:
+  documentation:
+    enabled: false
+halo:
+  auth-enabled: true
+  mode: test
+  work-dir: ${user.home}/halo-test/
+  cache: memory

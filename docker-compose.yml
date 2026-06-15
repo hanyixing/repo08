@@ -1,0 +1,90 @@
+# Unified orchestration for the Halo blog and its MySQL database.
+#
+# Quick start:
+#   cp .env.example .env   # then edit the passwords
+#   docker compose up -d --build
+#
+# The Halo service waits for MySQL to report healthy before it starts, and uses
+# the `prod` Spring profile (src/main/resources/application-prod.yaml), which
+# reads its database settings from the HALO_DB_* environment variables below.
+
+services:
+  halo-mysql:
+    image: mysql:8.0
+    container_name: halo-mysql
+    restart: unless-stopped
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+      - --explicit_defaults_for_timestamp=true
+    environment:
+      MYSQL_ROOT_PASSWORD: ${HALO_DB_ROOT_PASSWORD:-please-change-me-root}
+      MYSQL_DATABASE: ${HALO_DB_NAME:-halo}
+      MYSQL_USER: ${HALO_DB_USERNAME:-halo}
+      MYSQL_PASSWORD: ${HALO_DB_PASSWORD:-please-change-me}
+      TZ: Asia/Shanghai
+    volumes:
+      - halo-mysql-data:/var/lib/mysql
+    networks:
+      - halo-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${HALO_DB_ROOT_PASSWORD:-please-change-me-root}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1024M
+        reservations:
+          memory: 512M
+
+  halo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: halohub/halo:local
+    container_name: halo
+    restart: unless-stopped
+    depends_on:
+      halo-mysql:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      HALO_DB_HOST: halo-mysql
+      HALO_DB_PORT: "3306"
+      HALO_DB_NAME: ${HALO_DB_NAME:-halo}
+      HALO_DB_USERNAME: ${HALO_DB_USERNAME:-halo}
+      HALO_DB_PASSWORD: ${HALO_DB_PASSWORD:-please-change-me}
+      JAVA_OPTS: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+      TZ: Asia/Shanghai
+    ports:
+      - "${HALO_PORT:-8090}:8090"
+    volumes:
+      - halo-data:/app/data
+    networks:
+      - halo-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/api/admin/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1024M
+        reservations:
+          memory: 512M
+
+volumes:
+  halo-mysql-data:
+  halo-data:
+
+networks:
+  halo-net:
+    driver: bridge
