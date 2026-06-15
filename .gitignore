@@ -72,6 +72,22 @@ application-local.yml
 application-local.yaml
 application-local.properties
 
+### Environment and sensitive files
+.env
+.env.local
+.env.production
+*.env
+application-prod.yaml
+application-prod.yml
+application-prod.properties
+**/application-secrets.*
+**/credentials.*
+**/secrets.*
+
+### Backup files
+backups/
+.previous-image
+
 ### Zip file for test
 !application/src/test/resources/themes/*.zip
 !application/src/main/resources/themes/*.zip

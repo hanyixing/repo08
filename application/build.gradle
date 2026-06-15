@@ -22,6 +22,16 @@ plugins {
 
 group = 'run.halo.app'
 
+// Environment profile support
+// Usage: ./gradlew bootRun -Pprofile=dev
+//        ./gradlew bootJar -Pprofile=prod
+def profile = project.hasProperty('profile') ? project.property('profile') : 'dev'
+def validProfiles = ['dev', 'test', 'prod']
+if (!validProfiles.contains(profile)) {
+    throw new GradleException("Invalid profile '${profile}'. Valid profiles: ${validProfiles.join(', ')}")
+}
+logger.lifecycle("Building with profile: ${profile}")
+
 tasks.withType(JavaCompile).configureEach {
     options.release = 21
     options.encoding = 'UTF-8'
@@ -63,13 +73,23 @@ springBoot {
     }
 }
 
+bootRun {
+    systemProperty 'spring.profiles.active', profile
+}
+
 bootJar {
     archiveBaseName = 'halo'
     manifest {
         attributes 'Implementation-Title': 'Halo Application',
-        'Implementation-Vendor': 'Halo OSS Team'
+            'Implementation-Vendor': 'Halo OSS Team'
     }
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    // Set default active profile in the built jar
+    if (profile != 'dev') {
+        launchScript {
+            properties 'spring.profiles.active': profile
+        }
+    }
 }
 
 gitProperties {
@@ -137,7 +157,17 @@ tasks.named('test', Test) {
 tasks.named('jacocoTestReport', JacocoReport) {
     reports {
         xml.required = true
-        html.required = false
+        html.required = true
+    }
+}
+
+tasks.named('jacocoTestCoverageVerification', JacocoCoverageVerification) {
+    violationRules {
+        rule {
+            limit {
+                minimum = 0.0
+            }
+        }
     }
 }
 

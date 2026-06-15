@@ -24,18 +24,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  code-quality:
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - name: Setup Environment
         uses: ./.github/actions/setup-env
-      - name: Check Halo
-        run: ./gradlew clean check --configuration-cache --configuration-cache-problems=warn
-      - name: Upload coverage reports to Codecov
+      - name: Spotless Check (Code Format)
+        run: ./gradlew spotlessCheck --configuration-cache --configuration-cache-problems=warn
+      - name: Compile Check
+        run: ./gradlew compileJava compileTestJava --configuration-cache --configuration-cache-problems=warn
+
+  test:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    needs: code-quality
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Environment
+        uses: ./.github/actions/setup-env
+      - name: Run Tests with JaCoCo Coverage
+        run: ./gradlew clean test jacocoTestReport --configuration-cache --configuration-cache-problems=warn
+      - name: Upload JaCoCo Coverage Reports to Codecov
         if: github.repository == 'halo-dev/halo'
         uses: codecov/codecov-action@v6
+        with:
+          files: application/build/reports/jacoco/test/jacocoTestReport.xml
+          flags: unittests
+          name: halo-coverage
+          fail_ci_if_error: false
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: test-results
+          path: |
+            application/build/reports/tests/
+            application/build/reports/jacoco/
+          retention-days: 7
 
   build:
     runs-on: ubuntu-latest

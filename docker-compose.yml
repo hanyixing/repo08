@@ -1,0 +1,87 @@
+version: "3.8"
+
+services:
+  mysql:
+    image: mysql:8.1
+    container_name: halo-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-halo_root_password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-halo}
+      MYSQL_USER: ${MYSQL_USER:-halo}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-halo_password}
+      TZ: Asia/Shanghai
+    command:
+      - --default-authentication-plugin=caching_sha2_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+      - --explicit_defaults_for_timestamp=true
+      - --max-connections=500
+      - --innodb-buffer-pool-size=256M
+    volumes:
+      - mysql-data:/var/lib/mysql
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    networks:
+      - halo-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+        reservations:
+          memory: 512M
+          cpus: "0.5"
+
+  halo:
+    image: ${HALO_IMAGE:-ghcr.io/halo-dev/halo-dev:main}
+    container_name: halo
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      SPRING_R2DBC_URL: r2dbc:pool:mysql://mysql:3306/${MYSQL_DATABASE:-halo}
+      SPRING_R2DBC_USERNAME: ${MYSQL_USER:-halo}
+      SPRING_R2DBC_PASSWORD: ${MYSQL_PASSWORD:-halo_password}
+      SPRING_SQL_INIT_PLATFORM: mysql
+      HALO_WORK_DIR: /root/.halo2
+      JVM_OPTS: ${JVM_OPTS:--Xms256m -Xmx512m}
+      TZ: Asia/Shanghai
+    volumes:
+      - halo-data:/root/.halo2
+    ports:
+      - "${HALO_PORT:-8090}:8090"
+    networks:
+      - halo-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/actuator/health/readiness"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "2.0"
+        reservations:
+          memory: 512M
+          cpus: "1.0"
+
+volumes:
+  mysql-data:
+    driver: local
+  halo-data:
+    driver: local
+
+networks:
+  halo-network:
+    driver: bridge
